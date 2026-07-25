@@ -65,7 +65,6 @@ This starts:
 - `db` — a PostgreSQL 15 instance on port `5432`
 - `career-mapper` — the FastAPI backend on port `8080`
 
-> **Note:** `docker-compose.yml` ships with default credentials (`DATABASE_URL`, `SECRET_KEY`) for local development. **Replace these with your own secrets before deploying to production.**
 
 ### Local development (without Docker)
 
