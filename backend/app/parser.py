@@ -205,18 +205,21 @@ def extract_text_from_pdf(content: bytes) -> str:
 
 
 def extract_text_from_docx(content: bytes) -> str:
-    """Extract raw text from DOCX using python-docx."""
-    doc = docx.Document(io.BytesIO(content))
-    full_text = []
-    for para in doc.paragraphs:
-        if para.text.strip():
-            full_text.append(para.text)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                if cell.text.strip():
-                    full_text.append(cell.text)
-    return "\n".join(full_text)
+    """Extract raw text from DOCX using zipfile to catch textboxes and shapes."""
+    import zipfile
+    text_chunks = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as docx_zip:
+            for item in docx_zip.namelist():
+                if item.startswith('word/') and item.endswith('.xml'):
+                    xml_content = docx_zip.read(item).decode('utf-8', errors='ignore')
+                    # Find all text inside <w:t> tags
+                    matches = re.findall(r'<w:t(?:[^>]*)>([^<]*)</w:t>', xml_content)
+                    if matches:
+                        text_chunks.extend(matches)
+    except Exception as e:
+        print(f"DOCX extraction note: {e}")
+    return " ".join(text_chunks)
 
 
 def parse_experience_years(text: str) -> float:

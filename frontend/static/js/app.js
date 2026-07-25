@@ -3,11 +3,11 @@ const { useState, useEffect, useRef, useCallback } = React;
 // ─── CONSTANTS ──────────────────────────────────────────────────────────
 const DOMAIN_META = {
   web_security:    { label: 'Web',      color: '#3B82F6' },
-  network_security:{ label: 'Network',  color: '#10B981' },
-  dfir:            { label: 'DFIR',     color: '#F59E0B' },
-  soc_siem:        { label: 'SOC/SIEM', color: '#06B6D4' },
+  network_security:{ label: 'Network',  color: '#14B8A6' },
+  dfir:            { label: 'DFIR',     color: '#D946EF' },
+  soc_siem:        { label: 'SOC/SIEM', color: '#0EA5E9' },
   threat_hunting:  { label: 'Hunting',  color: '#8B5CF6' },
-  malware_re:      { label: 'Malware',  color: '#EF4444' },
+  malware_re:      { label: 'Malware',  color: '#EC4899' },
 };
 
 const TIER_META = {
@@ -18,11 +18,15 @@ const TIER_META = {
 };
 
 const ROLES = [
-  { id: 'soc_analyst',      label: 'SOC Analyst'   },
+  { id: 'soc_analyst',      label: 'SOC Analyst L1'   },
   { id: 'pentester',        label: 'Pentester'      },
-  { id: 'dfir_specialist',  label: 'DFIR'           },
+  { id: 'dfir_specialist',  label: 'DFIR Analyst'   },
   { id: 'threat_hunter',    label: 'Threat Hunter'  },
-  { id: 'reverse_engineer', label: 'Malware / RE'   },
+];
+
+const VIEWS = [
+  { id: 'main',     label: 'Main' },
+  { id: 'timeline', label: 'Timeline Constructor' }
 ];
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────
@@ -36,49 +40,93 @@ function formatBytes(bytes) {
 // ─── PDF PREVIEW ─────────────────────────────────────────────────────────
 // Renders the actual uploaded PDF using PDF.js. Falls back to a
 // document placeholder for DOCX files.
-function PDFPreview({ file, parsedCv }) {
+function DocumentPreview({ file, parsedCv }) {
   const canvasRef    = useRef(null);
   const containerRef = useRef(null);
+  const docxRef      = useRef(null);
   const [numPages,   setNumPages]   = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pdfDoc,     setPdfDoc]     = useState(null);
-  const [loading,    setPdfLoading] = useState(false);
+  const [docxHtml,   setDocxHtml]   = useState('');
+  const [loading,    setLoading]    = useState(false);
   const [renderErr,  setRenderErr]  = useState(false);
 
-  const isPDF = file && file.name.toLowerCase().endsWith('.pdf');
+  const filename = file ? file.name.toLowerCase() : (parsedCv ? parsedCv.filename.toLowerCase() : '');
+  const isPDF = filename.endsWith('.pdf');
+  const isDOCX = filename.endsWith('.docx') || filename.endsWith('.doc');
 
-  // Load PDF document when file changes
   useEffect(() => {
-    if (!isPDF || !file || typeof window.pdfjsLib === 'undefined') return;
-    setPdfLoading(true);
+    if (!file) return;
+    
+    let isCancelled = false;
+    let loadingTask = null;
+
+    setLoading(true);
     setRenderErr(false);
     setCurrentPage(1);
     setPdfDoc(null);
+    setDocxHtml('');
 
-    const reader = new FileReader();
-    reader.onload = async (e) => {
+    const loadDoc = async () => {
       try {
-        const typedArray = new Uint8Array(e.target.result);
-        const pdf = await window.pdfjsLib.getDocument({ data: typedArray }).promise;
-        setNumPages(pdf.numPages);
-        setPdfDoc(pdf);
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          if (isCancelled) return;
+          try {
+            const arrayBuffer = e.target.result;
+            
+            if (isPDF && typeof window.pdfjsLib !== 'undefined') {
+              const typedArray = new Uint8Array(arrayBuffer);
+              loadingTask = window.pdfjsLib.getDocument({ data: typedArray });
+              const pdf = await loadingTask.promise;
+              if (isCancelled) return;
+              setNumPages(pdf.numPages);
+              setPdfDoc(pdf);
+            } else if (isDOCX && typeof window.mammoth !== 'undefined') {
+              const result = await window.mammoth.convertToHtml({ arrayBuffer });
+              if (isCancelled) return;
+              setDocxHtml(result.value);
+            }
+          } catch (err) {
+            if (!isCancelled) {
+              console.error('Document load error:', err);
+              setRenderErr(true);
+            }
+          } finally {
+            if (!isCancelled) setLoading(false);
+          }
+        };
+        reader.readAsArrayBuffer(file);
       } catch (err) {
-        console.error('PDF.js load error:', err);
-        setRenderErr(true);
-      } finally {
-        setPdfLoading(false);
+        if (!isCancelled) {
+          console.error('FileReader error:', err);
+          setRenderErr(true);
+          setLoading(false);
+        }
       }
     };
-    reader.readAsArrayBuffer(file);
-  }, [file]);
 
-  // Render the current page whenever pdfDoc or page number changes
+    loadDoc();
+    
+    return () => {
+      isCancelled = true;
+      if (loadingTask) {
+        try { loadingTask.destroy(); } catch (e) {}
+      }
+    };
+  }, [file, isPDF, isDOCX]);
+
   useEffect(() => {
-    if (!pdfDoc || !canvasRef.current) return;
+    if (!pdfDoc || !canvasRef.current || !isPDF) return;
+
+    let renderTask = null;
+    let isCancelled = false;
 
     const render = async () => {
       try {
         const page = await pdfDoc.getPage(currentPage);
+        if (isCancelled) return;
+        
         const containerW = containerRef.current?.clientWidth || 320;
         const nativeVp   = page.getViewport({ scale: 1 });
         const scale      = Math.min((containerW - 2) / nativeVp.width, 2.5);
@@ -90,55 +138,43 @@ function PDFPreview({ file, parsedCv }) {
         canvas.height = viewport.height;
         canvas.style.width = '100%';
 
-        await page.render({ canvasContext: ctx, viewport }).promise;
+        renderTask = page.render({ canvasContext: ctx, viewport });
+        await renderTask.promise;
       } catch (err) {
-        console.error('PDF.js render error:', err);
+        if (err.name !== 'RenderingCancelledException') {
+          console.error('PDF render error:', err);
+        }
       }
     };
 
     render();
-  }, [pdfDoc, currentPage]);
+    
+    return () => {
+      isCancelled = true;
+      if (renderTask) renderTask.cancel();
+    };
+  }, [pdfDoc, currentPage, isPDF]);
 
-  const hash   = parsedCv?.cv_hash || '';
-  const rawLen = parsedCv?.raw_text_length || 0;
-
-  // ── DOCX / no-file fallback
-  if (!isPDF) {
+  if (!file) {
     return (
-      <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
-        <div style={{
-          flex:1, display:'flex', flexDirection:'column',
-          alignItems:'center', justifyContent:'center',
-          gap:'0.85rem', padding:'2rem',
-        }}>
-          <div style={{ fontSize:'2.5rem', opacity:0.3 }}>📘</div>
-          <div style={{
-            fontFamily:'var(--font-mono)', fontSize:'0.68rem',
-            color:'var(--text-muted)', textAlign:'center', lineHeight:1.6,
-          }}>
-            {file ? `${file.name}\nPreview not available for Word documents` : 'No document loaded'}
-          </div>
+      <div style={{ display:'flex', flexDirection:'column', height:'100%', alignItems:'center', justifyContent:'center', padding:'2rem' }}>
+        <div style={{ fontSize:'2.5rem', opacity:0.3 }}>📘</div>
+        <div style={{ fontFamily:'var(--font-mono)', fontSize:'0.68rem', color:'var(--text-muted)', textAlign:'center', marginTop:'1rem' }}>
+          NO DOCUMENT AVAILABLE<br/><br/>Upload a CV to see preview
         </div>
-        {hash && (
-          <div className="cv-hash-bar">
-            <span className="hash-label">SHA256</span>
-            <span className="hash-value">{hash} · {rawLen.toLocaleString()} chars</span>
-          </div>
-        )}
       </div>
     );
   }
 
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
-
-      {/* ── PDF canvas scroll area */}
-      <div ref={containerRef} className="pdf-preview-scroll">
+      {/* ── Document container */}
+      <div ref={containerRef} className="pdf-preview-scroll" style={{ overflowY: isDOCX ? 'auto' : 'hidden', backgroundColor: isDOCX ? '#ffffff' : 'transparent', color: isDOCX ? '#000' : 'inherit' }}>
         {loading && (
           <div className="pdf-loading-placeholder">
             <div className="scanner-line" style={{ width:'80%', margin:'0 auto' }} />
             <div style={{ fontFamily:'var(--font-mono)', fontSize:'0.68rem', color:'var(--text-muted)', marginTop:'1rem' }}>
-              Rendering PDF…
+              Rendering Document…
             </div>
           </div>
         )}
@@ -147,16 +183,24 @@ function PDFPreview({ file, parsedCv }) {
             Could not render preview
           </div>
         )}
-        <canvas
-          ref={canvasRef}
-          className="pdf-canvas"
-          style={{ display: loading || renderErr ? 'none' : 'block' }}
-        />
-        <div className="pdf-fade" />
+        
+        {isPDF && (
+          <canvas
+            ref={canvasRef}
+            className="pdf-canvas"
+            style={{ display: loading || renderErr ? 'none' : 'block' }}
+          />
+        )}
+        
+        {isDOCX && !loading && !renderErr && (
+          <div style={{ padding: '1.5rem', fontFamily: 'sans-serif' }} dangerouslySetInnerHTML={{ __html: docxHtml }} />
+        )}
+        
+        {isPDF && <div className="pdf-fade" />}
       </div>
 
       {/* ── Page navigation */}
-      {numPages > 1 && (
+      {isPDF && numPages > 1 && (
         <div className="pdf-page-nav">
           <button
             className="pdf-nav-btn"
@@ -169,14 +213,6 @@ function PDFPreview({ file, parsedCv }) {
             disabled={currentPage >= numPages}
             onClick={() => setCurrentPage(p => p + 1)}
           >→</button>
-        </div>
-      )}
-
-      {/* ── Hash fingerprint bar */}
-      {hash && (
-        <div className="cv-hash-bar">
-          <span className="hash-label">SHA256</span>
-          <span className="hash-value">{hash} · {rawLen.toLocaleString()} chars</span>
         </div>
       )}
     </div>
@@ -255,6 +291,18 @@ function ExtractionStream({ parsedCv }) {
               );
             })}
           </div>
+
+          <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-bright)', marginTop: '1.5rem', marginBottom: '0.3rem' }}>Proficiency contributor</div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.4 }}>
+            These extracted skills directly map to the domains that shape your Skill Proficiency Radar:
+            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginTop: '0.4rem' }}>
+              {Object.entries(detected_domains).filter(([k, v]) => v > 0).map(([k, v]) => (
+                <span key={k} style={{ color: DOMAIN_META[k]?.color || '#fff', background: 'rgba(255,255,255,0.05)', padding: '0.2rem 0.5rem', borderRadius: '4px' }}>
+                  {DOMAIN_META[k]?.label}: <strong>{v}</strong>
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -268,33 +316,51 @@ function ExtractionStream({ parsedCv }) {
 }
 
 // ─── DOMAIN BARS ─────────────────────────────────────────────────────────
-function DomainBars({ domainScores }) {
+function DomainBars({ domainScores, targetRoleName }) {
   return (
     <div className="glass-card domain-bars-card">
       <div className="card-header">
         <div>
-          <div className="card-label">Coverage Assessment</div>
-          <div className="card-title">Domain Scores</div>
+          <div className="card-label">Role Gap Analysis</div>
+          <div className="card-title">vs {targetRoleName}</div>
         </div>
       </div>
       <div className="card-body">
         {domainScores.map((ds) => {
           const meta = DOMAIN_META[ds.domain_id] || { color: '#06B6D4', label: ds.domain_name };
+          const gap = ds.target_score - ds.user_score;
+          const hasGap = gap > 0;
           return (
-            <div key={ds.domain_id} className="domain-bar-row">
-              <div className="domain-bar-label" title={ds.domain_name}>
-                {meta.label}
+            <div key={ds.domain_id} style={{ marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: '0.4rem', fontFamily: 'var(--font-mono)' }}>
+                <span style={{ fontWeight: 600, color: '#fff', letterSpacing: '0.05em' }}>{meta.label}</span>
+                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: hasGap ? '#EF4444' : '#10B981' }}>
+                  {hasGap ? `DIFFERENCE: ${Math.round(gap)} PTS` : 'EXCEEDS TARGET'}
+                </span>
               </div>
-              <div className="domain-bar-track">
+              <div style={{ position: 'relative', height: '8px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', overflow: 'visible' }}>
+                {/* User Score Fill */}
                 <div
-                  className="domain-bar-fill"
                   style={{
-                    width: `${ds.user_score}%`,
-                    background: `linear-gradient(90deg, ${meta.color}99, ${meta.color})`,
+                    position: 'absolute', top: 0, left: 0, bottom: 0,
+                    width: `${Math.min(100, ds.user_score)}%`,
+                    background: `linear-gradient(90deg, ${meta.color}50, ${meta.color})`,
+                    borderRadius: '4px',
+                    transition: 'width 0.6s var(--ease-out)'
                   }}
                 />
+                {/* Target Marker */}
+                <div 
+                  style={{
+                    position: 'absolute', top: '-4px', bottom: '-4px',
+                    left: `${Math.min(100, ds.target_score)}%`, width: '3px',
+                    background: '#fff', boxShadow: '0 0 6px rgba(255,255,255,0.8)',
+                    borderRadius: '2px', zIndex: 2,
+                    transition: 'left 0.6s var(--ease-out)'
+                  }}
+                  title={`Target: ${ds.target_score}`}
+                />
               </div>
-              <div className="domain-bar-score">{Math.round(ds.user_score)}</div>
             </div>
           );
         })}
@@ -456,11 +522,312 @@ function LabItem({ lab, isDone, onToggle, index }) {
   );
 }
 
+// ─── PHASE TIMELINE COMPONENT ─────────────────────────────────────────
+function PhaseTimeline({ roadmap }) {
+  const [activePhaseIdx, setActivePhaseIdx] = React.useState(0);
+  
+  if (!roadmap || roadmap.length === 0) return null;
+  
+  const activePhase = roadmap[activePhaseIdx];
+  const totalLabs = roadmap.reduce((acc, p) => acc + (p.labs?.length || 0), 0);
+  const totalHours = roadmap.reduce((acc, p) => acc + (p.est_hours || 0), 0);
+
+  // Color per phase index
+  const phaseColors = ['#06B6D4', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#10B981', '#EC4899', '#F97316'];
+  const getColor = (idx) => phaseColors[idx % phaseColors.length];
+
+  return (
+    <div style={{ padding: '2rem 0' }}>
+      
+      {/* Title + Stats */}
+      <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
+        <div style={{ fontSize: '0.75rem', letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--teal)', marginBottom: '0.5rem', fontFamily: 'var(--font-mono)' }}>Personalised Lab Path</div>
+        <h2 style={{ fontSize: '1.8rem', fontWeight: 700, color: '#fff', marginBottom: '0.75rem', fontFamily: 'var(--font-display)' }}>
+          Learning Timeline
+        </h2>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '2rem', fontSize: '0.85rem', color: 'var(--text-base)' }}>
+          <span><strong style={{ color: '#fff' }}>{roadmap.length}</strong> Phases</span>
+          <span><strong style={{ color: '#fff' }}>{totalLabs}</strong> Labs</span>
+          <span><strong style={{ color: '#fff' }}>{totalHours}</strong> Hours</span>
+        </div>
+      </div>
+
+      {/* ---- Horizontal Timeline Bar ---- */}
+      <div style={{ position: 'relative', padding: '4rem 3rem 3rem', overflowX: 'auto' }}>
+        {/* Background line */}
+        <div style={{
+          position: 'absolute', top: 'calc(4rem + 20px)', left: '3rem', right: '3rem',
+          height: '4px', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: '2px'
+        }} />
+        {/* Active progress line */}
+        <div style={{
+          position: 'absolute', top: 'calc(4rem + 20px)', left: '3rem',
+          width: `${((activePhaseIdx) / Math.max(roadmap.length - 1, 1)) * 100}%`,
+          maxWidth: 'calc(100% - 6rem)',
+          height: '4px', backgroundColor: getColor(activePhaseIdx), borderRadius: '2px',
+          transition: 'width 0.4s var(--ease-out), background-color 0.3s',
+          boxShadow: `0 0 12px ${getColor(activePhaseIdx)}40`
+        }} />
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', position: 'relative', minWidth: roadmap.length > 5 ? `${roadmap.length * 160}px` : 'auto' }}>
+          {roadmap.map((phase, idx) => {
+            const isPast = idx < activePhaseIdx;
+            const isCurrent = idx === activePhaseIdx;
+            const isFuture = idx > activePhaseIdx;
+            const nodeColor = isFuture ? 'rgba(255,255,255,0.15)' : getColor(idx);
+
+            return (
+              <div
+                key={phase.phase_id}
+                onClick={() => setActivePhaseIdx(idx)}
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center',
+                  cursor: 'pointer', flex: 1, minWidth: '140px', position: 'relative'
+                }}
+              >
+                {/* Diagonal label above */}
+                <div style={{
+                  position: 'absolute', bottom: 'calc(100% + 8px)', left: '50%',
+                  transform: 'rotate(-35deg)', transformOrigin: 'bottom left',
+                  fontSize: '0.78rem', fontWeight: isCurrent ? 700 : 400,
+                  color: isFuture ? 'var(--text-muted)' : '#fff',
+                  whiteSpace: 'nowrap', transition: 'all 0.3s',
+                  textShadow: isCurrent ? `0 0 8px ${getColor(idx)}80` : 'none'
+                }}>
+                  {phase.title}
+                </div>
+
+                {/* Node */}
+                <div style={{
+                  width: isCurrent ? '40px' : '28px',
+                  height: isCurrent ? '40px' : '28px',
+                  borderRadius: '50%',
+                  backgroundColor: isCurrent ? nodeColor : isPast ? nodeColor : 'var(--bg-elevated)',
+                  border: isFuture ? '3px solid rgba(255,255,255,0.15)' : `3px solid ${nodeColor}`,
+                  boxShadow: isCurrent ? `0 0 20px ${nodeColor}60, 0 0 40px ${nodeColor}20` : 'none',
+                  transition: 'all 0.3s var(--ease-out)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  zIndex: 2,
+                  fontSize: isCurrent ? '0.85rem' : '0.7rem',
+                  fontWeight: 700, color: isCurrent ? '#fff' : isPast ? '#fff' : 'var(--text-muted)'
+                }}>
+                  {isPast ? '✓' : idx + 1}
+                </div>
+
+                {/* Label below */}
+                <div style={{
+                  marginTop: '0.75rem', textAlign: 'center', transition: 'all 0.3s'
+                }}>
+                  <div style={{
+                    fontSize: '0.75rem', fontWeight: isCurrent ? 700 : 500,
+                    color: isFuture ? 'var(--text-muted)' : '#fff'
+                  }}>
+                    {phase.est_hours}h · {phase.labs?.length || 0} labs
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ---- Active Phase Detail Panel ---- */}
+      {activePhase && (
+        <div style={{
+          marginTop: '2rem',
+          background: 'linear-gradient(135deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)',
+          border: '1px solid rgba(255,255,255,0.06)',
+          borderRadius: '12px',
+          overflow: 'hidden'
+        }}>
+          {/* Phase Header */}
+          <div style={{
+            padding: '1.5rem 2rem',
+            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            background: `linear-gradient(90deg, ${getColor(activePhaseIdx)}12 0%, transparent 100%)`
+          }}>
+            <div>
+              <div style={{
+                fontSize: '0.7rem', letterSpacing: '1.5px', textTransform: 'uppercase',
+                color: getColor(activePhaseIdx), marginBottom: '0.35rem', fontFamily: 'var(--font-mono)'
+              }}>
+                Phase {activePhaseIdx + 1} of {roadmap.length}
+              </div>
+              <h3 style={{ fontSize: '1.35rem', color: '#fff', fontWeight: 700, margin: 0 }}>
+                {activePhase.title}
+              </h3>
+              <p style={{ fontSize: '0.88rem', color: 'var(--text-base)', marginTop: '0.35rem', margin: 0 }}>
+                {activePhase.description}
+              </p>
+            </div>
+            <div style={{
+              padding: '0.5rem 1.25rem', borderRadius: '8px',
+              backgroundColor: `${getColor(activePhaseIdx)}18`,
+              border: `1px solid ${getColor(activePhaseIdx)}30`,
+              color: getColor(activePhaseIdx),
+              fontSize: '1.1rem', fontWeight: 700, fontFamily: 'var(--font-mono)',
+              whiteSpace: 'nowrap'
+            }}>
+              {activePhase.est_hours}h
+            </div>
+          </div>
+
+          {/* Labs List */}
+          <div style={{ padding: '0.5rem 0' }}>
+            {(activePhase.labs || []).map((lab, labIdx) => (
+              <div key={lab.lab_id} style={{
+                display: 'flex', alignItems: 'center', gap: '1rem',
+                padding: '1rem 2rem',
+                borderBottom: labIdx < activePhase.labs.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                transition: 'background-color 0.2s',
+                cursor: 'default'
+              }}
+                onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.02)'}
+                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+              >
+                {/* Lab number */}
+                <div style={{
+                  width: '32px', height: '32px', borderRadius: '50%',
+                  border: `2px solid ${getColor(activePhaseIdx)}40`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '0.75rem', fontWeight: 600, color: getColor(activePhaseIdx),
+                  flexShrink: 0
+                }}>
+                  {labIdx + 1}
+                </div>
+
+                {/* Lab info */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.95rem', fontWeight: 600, color: '#fff' }}>{lab.lab_title}</span>
+                    <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', opacity: 0.6 }}>{lab.lab_id}</span>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--text-base)', marginTop: '0.2rem', lineHeight: 1.4 }}>
+                    {lab.description}
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.4rem' }}>
+                    <span style={{
+                      fontSize: '0.72rem', fontWeight: 600,
+                      color: (lab.difficulty || '').toLowerCase().includes('beginner') ? '#10B981' :
+                             (lab.difficulty || '').toLowerCase().includes('intermediate') ? '#F59E0B' :
+                             '#EF4444'
+                    }}>
+                      ◈ {lab.difficulty}
+                    </span>
+                    <span style={{
+                      fontSize: '0.72rem', fontWeight: 600,
+                      color: DOMAIN_META[lab.domain]?.color || 'var(--text-muted)'
+                    }}>
+                      ▪ {DOMAIN_META[lab.domain]?.label || lab.domain}
+                    </span>
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      {lab.tier}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── AUTHENTICATION SCREEN ──────────────────────────────────────────────────
+function AuthScreen({ onLoginSuccess }) {
+  const [isLogin, setIsLogin] = useState(true);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    
+    try {
+      const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
+      const payload = { username, password }; // email is optional in backend
+      const res = await axios.post(endpoint, payload);
+      
+      const { access_token, username: loggedInUser } = res.data;
+      localStorage.setItem('pwndora_token', access_token);
+      localStorage.setItem('pwndora_user', loggedInUser);
+      onLoginSuccess(access_token, loggedInUser);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Authentication failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="auth-container">
+      <div className="glass-card auth-card">
+        <div className="auth-header">
+          <div className="wordmark" style={{ justifyContent: 'center', marginBottom: '1.5rem' }}>
+            <div className="status-pip" />
+            <span className="wordmark-title">PWNDORA</span>
+          </div>
+          <h2 style={{ textAlign: 'center', fontSize: '1.2rem', marginBottom: '0.5rem', fontWeight: 600 }}>
+            {isLogin ? 'Welcome Back' : 'Create Account'}
+          </h2>
+          <p style={{ textAlign: 'center', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            {isLogin ? 'Log in to access your personalized learning path.' : 'Register to generate your own cybersecurity career map.'}
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="auth-form">
+          {error && <div className="auth-error">{error}</div>}
+          
+          <div className="form-group">
+            <label>Username</label>
+            <input 
+              type="text" 
+              value={username} 
+              onChange={(e) => setUsername(e.target.value)} 
+              placeholder="Enter your username"
+              required 
+            />
+          </div>
+          <div className="form-group">
+            <label>Password</label>
+            <input 
+              type="password" 
+              value={password} 
+              onChange={(e) => setPassword(e.target.value)} 
+              placeholder="Enter your password"
+              required 
+            />
+          </div>
+
+          <button type="submit" className="auth-submit-btn" disabled={loading}>
+            {loading ? 'Authenticating...' : (isLogin ? 'Sign In' : 'Sign Up')}
+          </button>
+        </form>
+
+        <div className="auth-toggle">
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+            {isLogin ? "Don't have an account? " : "Already have an account? "}
+          </span>
+          <button className="auth-toggle-btn" onClick={() => setIsLogin(!isLogin)}>
+            {isLogin ? 'Register' : 'Log In'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────
 function App() {
-  const [authToken]     = useState(localStorage.getItem('pwndora_token') || '');
-  const [currentUser]   = useState(localStorage.getItem('pwndora_user') || 'demo_user');
+  const [authToken, setAuthToken]     = useState(localStorage.getItem('pwndora_token') || '');
+  const [currentUser, setCurrentUser] = useState(localStorage.getItem('pwndora_user') || 'demo_user');
   const [targetRole, setTargetRole] = useState('soc_analyst');
+  const [activeView, setActiveView] = useState('main');
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState('');
   const [pathData, setPathData]     = useState(null);
@@ -471,24 +838,22 @@ function App() {
 
   const fileInputRef = useRef(null);
 
-  // ── Initial load
+  // ── Initial load (Stateless via IndexedDB)
   useEffect(() => {
-    fetchLearnerPath(currentUser);
-  }, []);
-
-  const fetchLearnerPath = async (userId) => {
-    try {
-      setLoading(true);
-      const res = await axios.get(`/api/learner-path/${userId}`);
-      const data = res.data;
-      setPathData(data);
-      setTargetRole(data.target_role_id || 'soc_analyst');
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+    if (authToken && window.localforage) {
+      const loadCache = async () => {
+        try {
+          const cachedData = await window.localforage.getItem('pwndora_pathData');
+          if (cachedData) setPathData(cachedData);
+          const cachedFile = await window.localforage.getItem('pwndora_file');
+          if (cachedFile) setSelectedFile(cachedFile);
+        } catch (e) {
+          console.error("LocalForage load error:", e);
+        }
+      };
+      loadCache();
     }
-  };
+  }, [authToken]);
 
   const handleRoleChange = async (newRole) => {
     setTargetRole(newRole);
@@ -496,7 +861,8 @@ function App() {
     try {
       setLoading(true);
       const res = await axios.post('/api/recalculate-path', {
-        target_role_id: newRole
+        target_role_id: newRole,
+        parsed_cv: pathData.parsed_cv
       }, {
         headers: {
           'Content-Type': 'application/json',
@@ -504,6 +870,7 @@ function App() {
         }
       });
       setPathData(res.data);
+      if (window.localforage) await window.localforage.setItem('pwndora_pathData', res.data);
     } catch (err) {
       const msg = err.response?.data?.detail || 'Could not update target role.';
       setError(msg);
@@ -544,6 +911,10 @@ function App() {
         headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
       });
       setPathData(res.data);
+      if (window.localforage) {
+        await window.localforage.setItem('pwndora_pathData', res.data);
+        await window.localforage.setItem('pwndora_file', file);
+      }
     } catch (err) {
       const msg = err.response?.data?.detail || err.message || 'Parsing failed';
       setError(msg);
@@ -574,13 +945,23 @@ function App() {
   };
 
   const handleClearCV = async () => {
-    try {
-      await axios.delete('/api/clear-path', {
-        headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {},
-      });
-    } catch (e) {
-      console.error(e);
+    if (window.localforage) {
+      await window.localforage.removeItem('pwndora_pathData');
+      await window.localforage.removeItem('pwndora_file');
     }
+    setPathData(null);
+    setSelectedFile(null);
+  };
+
+  const handleLogout = async () => {
+    localStorage.removeItem('pwndora_token');
+    localStorage.removeItem('pwndora_user');
+    if (window.localforage) {
+      await window.localforage.removeItem('pwndora_pathData');
+      await window.localforage.removeItem('pwndora_file');
+    }
+    setAuthToken('');
+    setCurrentUser('');
     setPathData(null);
     setSelectedFile(null);
   };
@@ -603,6 +984,13 @@ function App() {
   const hasData = pathData && pathData.parsed_cv?.raw_text_length > 0;
 
   // ─────────────────────────────────────────────────────────────────────
+  if (!authToken) {
+    return <AuthScreen onLoginSuccess={(token, user) => {
+      setAuthToken(token);
+      setCurrentUser(user);
+    }} />;
+  }
+
   return (
     <div>
       {/* ── HEADER ─────────────────────────────────────────────────── */}
@@ -616,7 +1004,7 @@ function App() {
             <span className="wordmark-subtitle">Career Mapper</span>
           </div>
 
-          {/* Role Segmented Control */}
+          {/* Target Role Segmented Control */}
           <div className="role-segmented">
             {ROLES.map(r => (
               <button
@@ -627,9 +1015,24 @@ function App() {
             ))}
           </div>
 
+          {/* View Segmented Control */}
+          <div className="role-segmented" style={{ marginLeft: '1rem' }}>
+            {VIEWS.map(v => (
+              <button
+                key={v.id}
+                className={`role-seg-btn ${activeView === v.id ? 'active' : ''}`}
+                onClick={() => setActiveView(v.id)}
+                style={activeView === v.id ? { background: 'rgba(255,255,255,0.1)' } : {}}
+              >{v.label}</button>
+            ))}
+          </div>
+
           {/* Right */}
-          <div className="header-right">
-            <span className="header-badge">spaCy · pdfplumber</span>
+          <div className="header-right" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-bright)' }}>{currentUser}</span>
+            <button className="auth-toggle-btn" style={{ padding: '0.3rem 0.6rem', border: '1px solid rgba(255,255,255,0.1)' }} onClick={handleLogout}>
+              Logout
+            </button>
           </div>
         </div>
       </header>
@@ -708,10 +1111,10 @@ function App() {
             <div className="upload-divider"><span>or try a demo</span></div>
             <div className="sample-row">
               <button id="sample-soc-btn" className="sample-btn" onClick={() => loadSampleCV('soc')}>
-                ⚡ SOC Analyst CV
+                ⚡ Main CV
               </button>
               <button id="sample-pent-btn" className="sample-btn" onClick={() => loadSampleCV('pentester')}>
-                ⚡ Pentester CV
+                ⚡ Timeline Constructor CV
               </button>
             </div>
           </section>
@@ -727,7 +1130,21 @@ function App() {
         )}
 
         {/* ── DASHBOARD ──────────────────────────────────────────────── */}
-        {hasData && !loading && (
+        {hasData && !loading && activeView === 'timeline' && (
+          <>
+            {/* FULL-WIDTH TIMELINE VIEW */}
+            <div className="glass-card" style={{ marginBottom: '1.5rem' }}>
+              <PhaseTimeline roadmap={pathData.roadmap} />
+            </div>
+
+            <div style={{ marginTop:'1.5rem', display:'flex', justifyContent:'center' }}>
+              <button className="sample-btn" onClick={handleClearCV}>
+                ↑ Upload a different CV
+              </button>
+            </div>
+          </>
+        )}
+        {hasData && !loading && activeView === 'main' && (
           <>
             {/* ── TOP ROW: CV Intel (60%) + Radar+Stats (40%) ──── */}
             <div className="dashboard-layout">
@@ -748,7 +1165,7 @@ function App() {
 
                 {/* Two-panel split */}
                 <div className="cv-intel-split" style={{ minHeight: '400px' }}>
-                  <PDFPreview file={selectedFile} parsedCv={pathData.parsed_cv} />
+                  <DocumentPreview file={selectedFile} parsedCv={pathData.parsed_cv} />
                   <ExtractionStream parsedCv={pathData.parsed_cv} />
                 </div>
               </div>
@@ -786,7 +1203,7 @@ function App() {
                 </div>
 
                 {/* Domain bars */}
-                <DomainBars domainScores={pathData.domain_scores} />
+                <DomainBars domainScores={pathData.domain_scores} targetRoleName={pathData.target_role_name} />
 
               </div>
             </div>

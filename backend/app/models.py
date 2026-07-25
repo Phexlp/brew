@@ -3,7 +3,7 @@ from typing import List, Dict, Optional, Any
 
 class UserRegister(BaseModel):
     username: str
-    email: str
+    email: Optional[str] = None
     password: str
 
 class UserLogin(BaseModel):
@@ -72,3 +72,4 @@ class LearningPathResponse(BaseModel):
 class PathRecalculateRequest(BaseModel):
     target_role_id: str
     user_skills_override: Optional[List[str]] = None
+    parsed_cv: ParsedCV

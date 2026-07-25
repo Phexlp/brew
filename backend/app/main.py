@@ -45,6 +45,12 @@ try:
 except Exception as e:
     print(f"DB Init Note: {e}")
 
+if os.environ.get("VERCEL") or os.environ.get("AWS_EXECUTION_ENV"):
+    UPLOADS_DIR = "/tmp/pwndora_uploads"
+else:
+    UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "data", "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+
 IN_MEMORY_PATHS: Dict[str, LearningPathResponse] = {}
 
 @app.post("/api/auth/register", response_model=Token)
@@ -102,6 +108,9 @@ async def parse_cv(
     content = await file.read()
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+        
+    if ext == 'pdf':
+        pass # We no longer save PDFs to disk!
     
     # 1. NLP CV Parsing
     try:
@@ -118,62 +127,11 @@ async def parse_cv(
         target_role_id=target_role_id
     )
     
-    # Save to PostgreSQL / database
-    try:
-        db_path = db.query(DBLearnerPath).filter(DBLearnerPath.user_id == current_user).first()
-        json_str = path_response.model_dump_json()
-        cv_json = parsed_cv.model_dump_json()
-        
-        if db_path:
-            db_path.target_role_id = target_role_id
-            db_path.parsed_cv_json = cv_json
-            db_path.path_response_json = json_str
-        else:
-            db_path = DBLearnerPath(
-                user_id=current_user,
-                target_role_id=target_role_id,
-                parsed_cv_json=cv_json,
-                path_response_json=json_str
-            )
-            db.add(db_path)
-        db.commit()
-    except Exception as e:
-        print(f"Database save warning: {e}")
-        
-    IN_MEMORY_PATHS[current_user] = path_response
+    # (No database or in-memory saving occurs. Strict stateless flow.)
     
     return path_response
 
-@app.get("/api/learner-path/{user_id}", response_model=LearningPathResponse)
-async def get_learner_path(user_id: str, db: Session = Depends(get_db)):
-    """Integration endpoint returning active learning path for PWNDORA frontend consumption."""
-    try:
-        db_path = db.query(DBLearnerPath).filter(DBLearnerPath.user_id == user_id).first()
-        if db_path and db_path.path_response_json:
-            data_dict = json.loads(db_path.path_response_json)
-            return LearningPathResponse(**data_dict)
-    except Exception as e:
-        print(f"Database read warning: {e}")
-
-    if user_id in IN_MEMORY_PATHS:
-        return IN_MEMORY_PATHS[user_id]
-    else:
-        # Empty default profile — NO fabricated data.
-        # User must upload a real CV to get real results.
-        empty_cv = ParsedCV(
-            raw_text_length=0,
-            filename="No CV uploaded",
-            skills=[],
-            certifications=[],
-            job_titles=[],
-            experience_years=0.0,
-            detected_domains={"web_security": 0, "network_security": 0, "soc_siem": 0, "dfir": 0, "threat_hunting": 0, "malware_re": 0},
-            entities=[],
-            cv_hash="empty_no_cv"
-        )
-        path = generate_learning_path(user_id=user_id, parsed_cv=empty_cv, target_role_id="soc_analyst")
-        IN_MEMORY_PATHS[user_id] = path
-        return path
+from app.auth import get_current_user
 
 @app.post("/api/recalculate-path", response_model=LearningPathResponse)
 async def recalculate_path(
@@ -181,22 +139,8 @@ async def recalculate_path(
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Recalculate path dynamically based on updated target role or skill overrides."""
-    active_path = None
-    try:
-        db_path = db.query(DBLearnerPath).filter(DBLearnerPath.user_id == current_user).first()
-        if db_path and db_path.path_response_json:
-            active_path = LearningPathResponse(**json.loads(db_path.path_response_json))
-    except Exception:
-        pass
-        
-    if not active_path:
-        active_path = IN_MEMORY_PATHS.get(current_user)
-        
-    if not active_path:
-        raise HTTPException(status_code=404, detail="No active CV profile found. Please upload a CV first.")
-        
-    parsed_cv = active_path.parsed_cv
+    """Recalculate path dynamically statelessly."""
+    parsed_cv = req.parsed_cv
     if req.user_skills_override:
         parsed_cv.skills = list(set(parsed_cv.skills + req.user_skills_override))
         
@@ -206,33 +150,7 @@ async def recalculate_path(
         target_role_id=req.target_role_id
     )
     
-    try:
-        json_str = updated_path.model_dump_json()
-        cv_json = parsed_cv.model_dump_json()
-        if db_path:
-            db_path.target_role_id = req.target_role_id
-            db_path.parsed_cv_json = cv_json
-            db_path.path_response_json = json_str
-            db.commit()
-    except Exception:
-        pass
-        
-    IN_MEMORY_PATHS[current_user] = updated_path
     return updated_path
-
-@app.delete("/api/clear-path")
-async def clear_path(current_user: str = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Clear the active path and CV for the current user."""
-    try:
-        db.query(DBLearnerPath).filter(DBLearnerPath.user_id == current_user).delete()
-        db.commit()
-    except Exception as e:
-        print(f"Database delete warning: {e}")
-        
-    if current_user in IN_MEMORY_PATHS:
-        del IN_MEMORY_PATHS[current_user]
-        
-    return {"status": "cleared"}
 
 @app.get("/api/taxonomy")
 async def get_taxonomy():
