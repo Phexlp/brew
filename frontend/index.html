@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#050912" />
+  <title>PWNDORA Career Mapper — Cybersecurity Skill Intelligence</title>
+  <meta name="description" content="Upload your CV and get a personalized cybersecurity learning path. NLP-powered skill extraction across 6 domains — SOC, DFIR, Web, Network, Threat Hunting, Malware RE." />
+
+  <!-- Fonts: Syne (display), Inter (body), JetBrains Mono (code) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- React 18 -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Axios -->
+  <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+
+  <!-- D3.js v7 -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <!-- PDF.js v3 (UMD) for in-browser PDF preview -->
+  <script src="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <script>
+    if (typeof pdfjsLib !== 'undefined') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+    }
+  </script>
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" src="/static/js/app.js"></script>
+</body>
+</html>

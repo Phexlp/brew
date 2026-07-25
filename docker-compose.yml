@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: pwndora-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: pwndora
+      POSTGRES_USER: pwndora
+      POSTGRES_PASSWORD: pwndorapassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pwndora -d pwndora"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  career-mapper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pwndora-career-mapper
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgresql://pwndora:pwndorapassword@db:5432/pwndora
+      - SECRET_KEY=pwndora-production-jwt-secret-key
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  postgres_data:
